@@ -33,20 +33,21 @@ from src import config
 
 def build_splits(df: pd.DataFrame, group_column: str = "group_strict", val_fraction: float = 0.2,
                  seed: int = config.SPLIT_SEED) -> tuple[np.ndarray, np.ndarray]:
-    """TASK 1. Hold out whole units of `group_column` until at least `val_fraction` of the rows are held out.
+    units = np.sort(df[group_column].unique())
 
-    The training set has only six strict units, so which one is held out
-    matters more than how. To make everyone in the room hold out the same
-    one, follow this procedure exactly:
+    np.random.default_rng(seed).shuffle(units)
 
-    1. take the distinct values of `group_column` in ascending order;
-    2. shuffle them with `np.random.default_rng(seed).shuffle`;
-    3. move units to the validation side in that order, stopping as soon as
-       the validation side holds at least `val_fraction` of the rows.
+    groups = df[group_column].to_numpy()
+    target = val_fraction * len(df)
+    val_units = []
+    val_count = 0
+    for unit in units:
+        if val_count >= target:
+            break
+        val_units.append(unit)
+        val_count += int((groups == unit).sum())
 
-    Return (train_idx, val_idx): positional indices into `df`, so that
-    `df.iloc[train_idx]` is the training table whatever the index of `df`
-    looks like. Together they cover every row exactly once, and no value of
-    `group_column` is on both sides.
-    """
-    raise NotImplementedError("TASK 1: the grouped split")
+    is_val = np.isin(groups, val_units)
+    val_idx = np.flatnonzero(is_val)
+    train_idx = np.flatnonzero(~is_val)
+    return train_idx, val_idx

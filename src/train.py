@@ -58,7 +58,8 @@ def to_tensor(a, device: str) -> torch.Tensor:
 
 def make_optimizer(model: torch.nn.Module, cfg: dict) -> torch.optim.Optimizer:
     """TASK 3. The optimiser, using cfg['train']['lr'] and cfg['train']['weight_decay']."""
-    raise NotImplementedError("TASK 3: choose the optimiser")
+    tr = cfg["train"]
+    return torch.optim.AdamW(model.parameters(), lr=tr["lr"], weight_decay=tr["weight_decay"])
 
 
 def train_epoch(model: torch.nn.Module, optimizer: torch.optim.Optimizer, loss_fn: torch.nn.Module,
@@ -69,7 +70,18 @@ def train_epoch(model: torch.nn.Module, optimizer: torch.optim.Optimizer, loss_f
     run is reproducible, step the optimiser once per minibatch, and return the
     mean training loss over the epoch, weighted by minibatch size.
     """
-    raise NotImplementedError("TASK 4: the minibatch loop")
+    model.train()                                           # dropout bekapcsolva
+    perm = torch.randperm(len(X), generator=generator)      # véletlen, de reprodukálható sorrend
+    total = 0.0
+    for start in range(0, len(X), batch_size):
+        idx = perm[start:start + batch_size].to(X.device)
+        xb, yb = X[idx], y[idx]
+        optimizer.zero_grad()
+        loss = loss_fn(model(xb), yb)
+        loss.backward()
+        optimizer.step()
+        total += loss.item() * len(idx)                     # súlyozás a minibatch méretével
+    return total / len(X)
 
 
 def predict(model: torch.nn.Module, X: torch.Tensor, batch_size: int = 1024) -> np.ndarray:
@@ -78,15 +90,23 @@ def predict(model: torch.nn.Module, X: torch.Tensor, batch_size: int = 1024) -> 
     Evaluation mode, no gradients, and it must give the same answer for a row
     whether that row is predicted alone or inside a batch.
     """
-    raise NotImplementedError("TASK 5: inference")
+    model.eval()                                            # dropout kikapcsolva
+    if len(X) == 0:
+        return np.empty(0, dtype=np.float32)
+    outs = []
+    with torch.no_grad():                                   # nincs gradiens-számolás
+        for start in range(0, len(X), batch_size):
+            outs.append(model(X[start:start + batch_size]).cpu())
+    return torch.cat(outs).numpy()
 
 
 def validate(model: torch.nn.Module, X_val: torch.Tensor, y_val: np.ndarray, ok: np.ndarray) -> float:
     """TASK 6. RMSE on the validation rows where `ok` is True (the scoreable ones)."""
-    raise NotImplementedError("TASK 6: validation")
+    pred = predict(model, X_val)
+    ok = np.asarray(ok, dtype=bool)
+    return float(rmse(np.asarray(y_val)[ok], pred[ok]))
 
-
-# ------------------------------------------------------------------ given
+# --------------------------------------------------------------- given
 
 def train_mlp(cfg: dict, X: np.ndarray, df: pd.DataFrame, train_idx: np.ndarray, val_idx: np.ndarray,
               device: str | None = None, tags: list[str] | None = None, log=print) -> dict:
