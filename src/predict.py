@@ -4,13 +4,24 @@
                           --checkpoint models/cnn_best.pt \
                           --out submissions/cnn_best.csv
 
-This file is a skeleton. The parts that define the *submission contract* are
-written out, because getting them wrong wastes a submission. The parts that are
-your model are marked TODO; for the lab 3 MLP they are: rebuild the model from
-the checkpoint (it stores the config, the input size and the standardiser),
-turn one image into pixels with `pixels_of_image`, standardise them with the
-stored mean and scale, and run the model. This is homework, since the competition is not open
-yet, and it is the first thing to test when it opens.
+The parts that define the *submission contract* are written out, because
+getting them wrong wastes a submission. The model parts handle two kinds of
+checkpoint:
+
+* lab 4 on (CNN): the model is rebuilt with `build_model` from the config,
+  input shape and loss stored in the checkpoint, and a photograph is
+  prepared by `inputs.preprocess_one`, the same steps as the training table;
+* lab 3 (MLP): rebuilt from its config, input size and standardiser.
+
+Dry run on the validation unit, before the competition opens:
+
+    python -m src.predict --config configs/lab4_cnn_768.yaml \
+                          --checkpoint models/<run>.pt --dry-run \
+                          --out data/work/dry_run.csv
+
+predicts every validation photograph of the config's split from the
+originals, one at a time, and prints the RMSE on the scoreable rows: it must
+match the validation RMSE the training run logged for this checkpoint.
 
 THE CONTRACT
 ------------
@@ -42,7 +53,6 @@ information across the test set. See section 2 of the project description.
 from __future__ import annotations
 
 import argparse
-import io
 from pathlib import Path
 
 import numpy as np
@@ -50,65 +60,96 @@ import pandas as pd
 import torch
 import yaml
 
-from src.data.dataset import CACHE_QUALITY, pixels_of_image, resized
+from src import config, losses
+from src.data import inputs
+from src.data.dataset import load_table, pixels_of_image
+from src.data.splits import build_splits
+from src.evaluate import rmse
+from src.models.build import build_model
 from src.models.mlp import MLP
 
-# The pixel table is built from the 768 px cache, not from the originals, so a
-# test photograph takes the same road: resize to 768, JPEG at the cache's
-# quality, then down to the pixel size. Skipping the detour changes the input
-# by a few grey levels per pixel, enough to move a prediction in the third digit.
-CACHE_SIZE = 768
+
+def _check_same(trained: dict, cfg: dict, checkpoint: Path) -> None:
+    """The config on the command line must describe the network in the checkpoint."""
+    for section in ("model", "data"):
+        for field, value in trained[section].items():
+            if field in cfg[section] and cfg[section][field] != value:
+                raise SystemExit(f"{checkpoint} was trained with {section}.{field}={value!r}, "
+                                 f"the config says {cfg[section][field]!r}")
 
 
 def load_model(checkpoint: Path, cfg: dict):
     """Rebuild the architecture from the config and load the saved weights.
 
     Put the model in eval mode and disable gradients. Return something callable
-    that maps one preprocessed image to one float.
-
-    The callable owns the standardiser too: its mean and scale were fitted on
-    the training rows and live in the checkpoint, so they travel with the
-    weights rather than with the config.
+    that maps one preprocessed image to one float. The callable carries the
+    checkpoint as `.checkpoint`, because preprocessing needs its standardiser.
     """
-    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    trained = ckpt["config"]
-    for section, field in (("model", "hidden"), ("model", "dropout"), ("data", "pixel_size")):
-        if trained[section][field] != cfg[section][field]:
-            raise SystemExit(f"{checkpoint} was trained with {section}.{field}={trained[section][field]}, "
-                             f"the config says {cfg[section][field]}")
-    if ckpt["in_dim"] != cfg["data"]["pixel_size"] ** 2:
-        raise SystemExit(f"checkpoint input size {ckpt['in_dim']} != pixel_size ** 2")
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)   # your own file
+    _check_same(ckpt["config"], cfg, checkpoint)
 
-    model = MLP(in_dim=ckpt["in_dim"], hidden=list(trained["model"]["hidden"]),
-                dropout=trained["model"]["dropout"])
-    model.load_state_dict(ckpt["state_dict"])
-    model.eval().requires_grad_(False)
-    mean, scale = ckpt["scaler_mean"], ckpt["scaler_scale"]
+    if "loss_state" in ckpt:                                   # lab 4 on: a CNN through build_model
+        loss = losses.from_state(ckpt["loss_state"])
+        model = build_model(ckpt["config"], tuple(ckpt["in_shape"]), loss)
+        model.load_state_dict(ckpt["state_dict"])
+        model.eval().requires_grad_(False)
 
-    def run(pixels: np.ndarray) -> float:
-        x = torch.as_tensor((pixels - mean) / scale, dtype=torch.float32).unsqueeze(0)
-        with torch.no_grad():
-            return float(model(x)[0])
+        def run(x: torch.Tensor) -> float:
+            with torch.no_grad():
+                return float(loss.predict(model(x)).reshape(-1)[0])
 
+    else:                                                      # lab 3: the MLP
+        trained = ckpt["config"]
+        model = MLP(in_dim=ckpt["in_dim"], hidden=list(trained["model"]["hidden"]),
+                    dropout=trained["model"]["dropout"])
+        model.load_state_dict(ckpt["state_dict"])
+        model.eval().requires_grad_(False)
+
+        def run(x: torch.Tensor) -> float:
+            with torch.no_grad():
+                return float(model(x)[0])
+
+    run.checkpoint = ckpt
     return run
 
 
-def preprocess(image_path: Path, cfg: dict):
+def preprocess(image_path: Path, cfg: dict, checkpoint: dict):
     """Read one image and turn it into model input.
 
     This must match training exactly. A resize or a normalisation that differs
     between training and prediction is the single most common reason a good
-    validation score turns into a bad leaderboard score.
+    validation score turns into a bad leaderboard score. Both branches go
+    through the bytes the 768 px cache would hold (`inputs.as_cached`).
     """
-    buf = io.BytesIO()
-    resized(image_path, CACHE_SIZE).save(buf, format="JPEG", quality=CACHE_QUALITY)
-    buf.seek(0)
-    return pixels_of_image(buf, cfg["data"]["pixel_size"])
+    if "loss_state" in checkpoint:
+        return inputs.preprocess_one(image_path, cfg, checkpoint)
+    x = pixels_of_image(inputs.as_cached(image_path), cfg["data"]["pixel_size"])
+    x = (x - checkpoint["scaler_mean"]) / checkpoint["scaler_scale"]
+    return torch.as_tensor(x, dtype=torch.float32).unsqueeze(0)
 
 
 def predict_one(model, image_path: Path, cfg: dict) -> float:
     """One image in, one number out."""
-    return min(max(model(preprocess(image_path, cfg)), 0.0), 1.0)
+    return min(max(model(preprocess(image_path, cfg, model.checkpoint)), 0.0), 1.0)
+
+
+def dry_run(model, cfg: dict) -> pd.DataFrame:
+    """Predict the validation unit of the config's split from the originals; print the RMSE."""
+    df = load_table()
+    sp = cfg["split"]
+    _, val_idx = build_splits(df, sp["group_column"], sp["val_fraction"], sp["seed"])
+    val = df.iloc[val_idx]
+    pred = np.array([predict_one(model, Path(p), cfg) for p in val["path"]])
+    ok = (val["eval_ok"] == 1).to_numpy()
+    score = rmse(val[config.TARGET].to_numpy()[ok], pred[ok])
+    print(f"dry run: {len(val)} validation photographs, strict units "
+          f"{sorted(int(u) for u in val['group_strict'].unique())}, "
+          f"RMSE {score:.4f} on {ok.sum()} scoreable rows")
+    logged = model.checkpoint.get("val_rmse")
+    if logged is not None:
+        print(f"the training run logged {logged:.4f} for this checkpoint (epoch {model.checkpoint.get('epoch')}): "
+              f"difference {abs(score - logged):.1e}, {'OK' if abs(score - logged) < 1e-3 else 'MISMATCH'}")
+    return pd.DataFrame({"image_id": val["image_id"].to_numpy(), "usability": pred})
 
 
 def main() -> None:
@@ -121,10 +162,21 @@ def main() -> None:
     ap.add_argument("--sample", default="data/raw/sample_submission.csv",
                     help="the competition's sample submission; defines ids and row order")
     ap.add_argument("--out", required=True, help="where to write the submission CSV")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="predict the validation unit from data/raw/train instead of the test set")
     a = ap.parse_args()
 
     with open(a.config) as f:
         cfg = yaml.safe_load(f)
+
+    model = load_model(Path(a.checkpoint), cfg)
+
+    if a.dry_run:
+        out = dry_run(model, cfg)
+        Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+        out.to_csv(a.out, index=False)
+        print(f"wrote {len(out)} rows to {a.out} (validation, not a submission)")
+        return
 
     # The sample submission is the source of truth for which ids exist and in
     # what order. Build the output from it rather than from a directory listing,
@@ -133,7 +185,6 @@ def main() -> None:
     if list(sample.columns) != ["image_id", "usability"]:
         raise SystemExit(f"unexpected sample columns: {list(sample.columns)}")
 
-    model = load_model(Path(a.checkpoint), cfg)
     test_dir = Path(a.test_dir)
 
     predictions = []

@@ -10,6 +10,7 @@ configuration:
 and it adds what a convolutional network on images needs that an MLP on a
 pixel table did not:
 
+
 * **inputs moved to the device one batch at a time**, so the whole table
   stays in ordinary memory;
 * **batched prediction**. Lab 3's `validate` predicts 1024 rows at once; at
