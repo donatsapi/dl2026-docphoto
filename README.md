@@ -293,3 +293,78 @@ third of the photographs, on a 1 to 5 scale, from several raters each. The
 competition does not score them. Where people and the OCR engine disagree, and
 whether the disagreement is structured, is an open question on data you helped
 create.
+
+---
+
+## Results
+
+All numbers are RMSE on the scoreable (`eval_ok = 1`) rows of strict unit 4,
+the lab's validation split, unless a column says otherwise. W&B project:
+`dl2026-docphoto`.
+
+### Lab 3 (in class)
+
+| model | val RMSE |
+|---|---|
+| constant (training mean) | 0.2362 |
+| gradient boosting, 7 features | 0.1732 |
+| MLP on 64 × 64 pixels, last epoch (60) | 0.2403 |
+| MLP, best epoch of the best variant, *chosen on validation (peeking)* | 0.2234 |
+
+The last row is not a result: the epoch and the variant were both picked by
+looking at the validation curve, so it is an optimistic number.
+
+### Homework 1: honest early stopping
+
+`configs/lab3_mlp_es.yaml` sets aside 15 % of the training rows, as whole
+`group`s, as a stopping set. The model never fits those rows. Each epoch is
+scored on them, and the best epoch's weights are restored and checkpointed.
+The validation rows play no part in choosing the epoch, so the validation
+score below is untouched.
+
+```bash
+docker compose run --rm dev python -m src.train --config configs/lab3_mlp_es.yaml
+```
+
+| model | chosen epoch | val RMSE |
+|---|---|---|
+| MLP, last epoch (lab) | 60 | 0.2403 |
+| MLP, best epoch on the stopping set | 5 | 0.2427 |
+
+_TODO: one or two sentences. How does it compare with the last epoch and with the peeking number, and
+how far apart are the stopping and validation curves?_
+
+### Homework 2: `src/predict.py`
+
+`predict.py` rebuilds the MLP from the checkpoint, including the standardiser
+stored with it. Each photograph goes through the same path the pixel table
+took: 768 px cache resize, JPEG at quality 92, then down to the pixel size.
+Checked on twenty training photographs against `train.predict`:
+
+```bash
+docker compose run --rm dev python scripts/check_predict.py \
+    --config configs/lab3_mlp_es.yaml --checkpoint models/lab3_mlp_es.pt
+```
+
+largest difference 5.96e-08  (tolerance 1e-05)
+
+### Homework 3: one feature of my own
+
+```bash
+docker compose run --rm dev python scripts/baseline_worst.py       # look at these first
+docker compose run --rm dev python scripts/feature_ablation.py     # then measure
+```
+
+The pictures are very tilted and shaped, but the reasons is the blurring.
+
+The feature is `text_sharp_p10` in `src/features/handcrafted.py`. It splits
+the page into an 8 × 8 grid and keeps only the tiles that contain ink. In each
+of those tiles it divides the Laplacian's spread by the tile's paper-to-ink
+contrast, so lighting cancels out. It then takes the 10th percentile across the
+text tiles. The idea: a smear over text should count, a smear over an empty
+margin should not, and a dim tile should not pass for a blurred one.
+
+| baseline | val RMSE, strict unit 4 | grouped 6-fold RMSE |
+|---|---|---|
+| gradient boosting, 7 features | 0.1732 | 0.1932 |
+| gradient boosting, 7 + `text_sharp_p10` | 0.1765 | 0.1888 |

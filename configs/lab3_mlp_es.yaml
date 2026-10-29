@@ -1,0 +1,39 @@
+# Homework 1: lab3_mlp.yaml with honest early stopping. Only the early_stopping block differs.
+# Copy this per experiment and change one thing at a time.
+name: lab3_mlp_es
+seed: 42
+
+data:
+  labels: data/raw/train.csv
+  images: data/raw/train
+  pixel_size: 64           # the photograph is reduced to pixel_size x pixel_size grey levels
+
+split:
+  strategy: by_group
+  group_column: group_strict   # layout-clean units; this is how the test set was cut
+  val_fraction: 0.2
+  seed: 3                       # the split has its own seed: changing the model seed must not move the validation set
+
+model:
+  type: mlp
+  hidden: [256, 64]
+  dropout: 0.3
+
+train:
+  epochs: 60
+  batch_size: 64
+  lr: 0.0003
+  weight_decay: 0.0001
+  log_every: 10
+  # The epoch is chosen on whole `group`s of the training units that the model
+  # does not fit, never on the validation rows. Its weights are restored and
+  # checkpointed. patience: null runs every epoch and keeps the best.
+  early_stopping:
+    group_column: group
+    fraction: 0.15
+    seed: 3
+    patience: null
+
+wandb:
+  project: dl2026-docphoto
+  tags: [lab3, early-stopping]

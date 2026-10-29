@@ -49,7 +49,10 @@ def cache_dir(size: int) -> Path:
     return WORK / f"train_{size}"
 
 
-def _resize_one(src: str, dst: Path, size: int) -> None:
+CACHE_QUALITY = 92
+
+def resized(src, size: int) -> Image.Image:
+    """One photograph with its long side at `size` px, exactly as the cache stores it (before JPEG)."""
     im = Image.open(src)
     # A JPEG can be decoded at 1/2, 1/4 or 1/8 scale straight from its DCT
     # coefficients. draft() picks the smallest scale that is still at least
@@ -58,8 +61,10 @@ def _resize_one(src: str, dst: Path, size: int) -> None:
     im.draft("RGB", (size, size))
     im = im.convert("RGB")
     im.thumbnail((size, size), Image.LANCZOS)  # long side -> size, aspect kept
-    im.save(dst, quality=92)
+    return im
 
+def _resize_one(src: str, dst: Path, size: int) -> None:
+    resized(src, size).save(dst, quality=CACHE_QUALITY)
 
 def build_cache(df: pd.DataFrame, size: int, workers: int = 4) -> Path:
     """Resize every photograph once so that its long side is `size` px.

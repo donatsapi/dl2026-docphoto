@@ -42,10 +42,22 @@ information across the test set. See section 2 of the project description.
 from __future__ import annotations
 
 import argparse
+import io
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+import torch
 import yaml
+
+from src.data.dataset import CACHE_QUALITY, pixels_of_image, resized
+from src.models.mlp import MLP
+
+# The pixel table is built from the 768 px cache, not from the originals, so a
+# test photograph takes the same road: resize to 768, JPEG at the cache's
+# quality, then down to the pixel size. Skipping the detour changes the input
+# by a few grey levels per pixel, enough to move a prediction in the third digit.
+CACHE_SIZE = 768
 
 
 def load_model(checkpoint: Path, cfg: dict):
@@ -53,8 +65,32 @@ def load_model(checkpoint: Path, cfg: dict):
 
     Put the model in eval mode and disable gradients. Return something callable
     that maps one preprocessed image to one float.
+
+    The callable owns the standardiser too: its mean and scale were fitted on
+    the training rows and live in the checkpoint, so they travel with the
+    weights rather than with the config.
     """
-    raise NotImplementedError("TODO: build the model and load the checkpoint")
+    ckpt = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    trained = ckpt["config"]
+    for section, field in (("model", "hidden"), ("model", "dropout"), ("data", "pixel_size")):
+        if trained[section][field] != cfg[section][field]:
+            raise SystemExit(f"{checkpoint} was trained with {section}.{field}={trained[section][field]}, "
+                             f"the config says {cfg[section][field]}")
+    if ckpt["in_dim"] != cfg["data"]["pixel_size"] ** 2:
+        raise SystemExit(f"checkpoint input size {ckpt['in_dim']} != pixel_size ** 2")
+
+    model = MLP(in_dim=ckpt["in_dim"], hidden=list(trained["model"]["hidden"]),
+                dropout=trained["model"]["dropout"])
+    model.load_state_dict(ckpt["state_dict"])
+    model.eval().requires_grad_(False)
+    mean, scale = ckpt["scaler_mean"], ckpt["scaler_scale"]
+
+    def run(pixels: np.ndarray) -> float:
+        x = torch.as_tensor((pixels - mean) / scale, dtype=torch.float32).unsqueeze(0)
+        with torch.no_grad():
+            return float(model(x)[0])
+
+    return run
 
 
 def preprocess(image_path: Path, cfg: dict):
@@ -64,12 +100,15 @@ def preprocess(image_path: Path, cfg: dict):
     between training and prediction is the single most common reason a good
     validation score turns into a bad leaderboard score.
     """
-    raise NotImplementedError("TODO: load and preprocess a single image")
+    buf = io.BytesIO()
+    resized(image_path, CACHE_SIZE).save(buf, format="JPEG", quality=CACHE_QUALITY)
+    buf.seek(0)
+    return pixels_of_image(buf, cfg["data"]["pixel_size"])
 
 
 def predict_one(model, image_path: Path, cfg: dict) -> float:
     """One image in, one number out."""
-    raise NotImplementedError("TODO: run the model, return a float in [0, 1]")
+    return min(max(model(preprocess(image_path, cfg)), 0.0), 1.0)
 
 
 def main() -> None:

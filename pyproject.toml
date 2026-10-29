@@ -22,3 +22,6 @@ ignore = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.ruff.lint.isort]
+known-third-party = ["wandb"]

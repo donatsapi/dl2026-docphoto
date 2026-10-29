@@ -87,21 +87,54 @@ FEATURES = {
 }
 
 
-def extract(image_id: str, size: int = FEATURE_SIZE) -> dict:
+# ---------------------------------------------------------------- my own (homework 3)
+
+TEXT_GRID = 8
+MIN_INK_CONTRAST = 60   # grey levels between paper and ink for a tile to count as text
+
+
+def text_sharpness_p10(gray: np.ndarray) -> float:
+    """Sharpness of the blurriest *text*, not of the blurriest tile.
+
+    `tile_lapvar_min` takes the inner tiles whether or not they hold text, and
+    measures raw Laplacian variance, which falls with contrast as well as with
+    blur: a dim but sharp tile and a bright but smeared one can score alike, and
+    a smear over an empty margin scores like a smear over a paragraph. Here, on
+    a finer grid, only tiles with ink in them count (paper-to-ink range of at
+    least MIN_INK_CONTRAST), each tile's sharpness is divided by its own
+    contrast so that lighting cancels, and the 10th percentile over those tiles
+    is kept: the bad part of the text, without hanging on a single tile.
+    NaN when no tile holds text; gradient boosting handles that natively.
+    """
+    vals = []
+    for t in _tiles(gray, TEXT_GRID):
+        p5, p95 = np.percentile(t, [5, 95])
+        if p95 - p5 >= MIN_INK_CONTRAST:
+            vals.append(cv2.Laplacian(t, cv2.CV_64F).std() / (p95 - p5))
+    return float(np.percentile(vals, 10)) if vals else float("nan")
+
+
+OWN_FEATURES = {
+    "text_sharp_p10": text_sharpness_p10,
+}
+
+
+def extract(image_id: str, size: int = FEATURE_SIZE, features: dict = FEATURES) -> dict:
     gray = cv2.imread(str(cache_dir(size) / f"{image_id}.jpg"), cv2.IMREAD_GRAYSCALE)
     if gray is None:
         raise FileNotFoundError(f"{image_id} not in the {size} px cache")
-    return {name: fn(gray) for name, fn in FEATURES.items()}
+    return {name: fn(gray) for name, fn in features.items()}
 
 
-def feature_table(df: pd.DataFrame, size: int = FEATURE_SIZE, workers: int = 4) -> pd.DataFrame:
-    """One row of features per row of `df`, same index."""
+def feature_table(df: pd.DataFrame, size: int = FEATURE_SIZE, workers: int = 4,
+                  features: dict = FEATURES) -> pd.DataFrame:
+    """One row of features per row of `df`, same index. `features` defaults to the given seven."""
     with ThreadPoolExecutor(workers) as ex:
-        rows = list(ex.map(lambda i: extract(i, size), df["image_id"]))
+        rows = list(ex.map(lambda i: extract(i, size, features), df["image_id"]))
     return pd.DataFrame(rows, index=df.index)
 
 
-def features_of_image(path: str, size: int = FEATURE_SIZE) -> dict:
+def features_of_image(path: str, size: int = FEATURE_SIZE, features: dict = FEATURES) -> dict:
     """The same features for an arbitrary image file, for prediction on photographs not in the cache.
 
     Resizes so the long side is `size`, exactly as the cache does, so a number
@@ -113,4 +146,4 @@ def features_of_image(path: str, size: int = FEATURE_SIZE) -> dict:
     h, w = img.shape
     f = size / max(h, w)
     gray = cv2.resize(img, (round(w * f), round(h * f)), interpolation=cv2.INTER_AREA)
-    return {name: fn(gray) for name, fn in FEATURES.items()}
+    return {name: fn(gray) for name, fn in features.items()}
