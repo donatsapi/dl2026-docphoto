@@ -368,3 +368,9 @@ margin should not, and a dim tile should not pass for a blurred one.
 |---|---|---|
 | gradient boosting, 7 features | 0.1732 | 0.1932 |
 | gradient boosting, 7 + `text_sharp_p10` | 0.1765 | 0.1888 |
+
+### Lab 4 homework 01: predict.py for the CNN
+
+Dry run on the validation unit (strict unit 4, 380 photographs) with `models/lab4_small_cnn.pt`:
+RMSE 0.2145, the training run logged 0.2145 for the same checkpoint (epoch 8), difference 1.6e-05.
+
