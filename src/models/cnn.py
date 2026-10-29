@@ -154,11 +154,18 @@ class SmallCNN(nn.Module):
                  dropout: float = 0.0, prior: float = 0.5, stem_stride: int = 2, stem_kernel: int = 5,
                  pool: str = "avg"):
         super().__init__()
-        raise NotImplementedError("TASK 1: build the layers of SmallCNN")
+        layers: list[nn.Module] = [conv_block(in_ch, widths[0], stride=stem_stride, kernel=stem_kernel, norm=norm)]
+        for c_in, c_out in zip(widths[:-1], widths[1:], strict=True):
+            layers += [conv_block(c_in, c_out, norm=norm), nn.MaxPool2d(2)]
+        self.features = nn.Sequential(*layers)
+        self.pool = GlobalPool(pool)
+        self.drop = nn.Dropout(dropout)
+        self.head = nn.Linear(widths[-1] * self.pool.factor, 1)
+        init_weights(self)
+        prior_bias(self.head, prior)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("TASK 1: the forward pass of SmallCNN")
-
+        return self.head(self.drop(self.pool(self.features(x)))).squeeze(1)
 
 class ResBlock(nn.Module):
     """TASK ⭐ (for the fast). A pre-norm residual block that keeps the shape of its input.
@@ -177,11 +184,17 @@ class ResBlock(nn.Module):
 
     def __init__(self, channels: int, norm: str = "batch"):
         super().__init__()
-        raise NotImplementedError("TASK ⭐: the layers of ResBlock")
+        self.norm1 = make_norm(norm, channels)
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.norm2 = make_norm(norm, channels)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1, bias=False)
+        self.conv2.zero_init = True
+        self.relu = nn.ReLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError("TASK ⭐: the forward pass of ResBlock")
-
+        out = self.conv1(self.relu(self.norm1(x)))
+        out = self.conv2(self.relu(self.norm2(out)))
+        return x + out
 
 class ResNetSmall(nn.Module):
     """Given: the SmallCNN layout with a residual block in every stage. Needs your ResBlock.
